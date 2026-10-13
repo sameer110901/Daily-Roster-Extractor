@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Daily Roster Extractor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root{--bg:#f0f2f6;--card:#fff;--ink:#05164D;--mute:#5d6685;--line:#dde1ec;--teal:#05164D;--tealbg:#e4e9f6;--o:#05164D;--r:#05164D;--p:#05164D;--y:#FFAD00;--err:#c0222f;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#040d2e;--card:#0b1a4a;--ink:#eef1fa;--mute:#9aa5c8;--line:#1f2f69;--teal:#FFAD00;--tealbg:#1a2a63}}
+:root[data-theme="dark"]{--bg:#040d2e;--card:#0b1a4a;--ink:#eef1fa;--mute:#9aa5c8;--line:#1f2f69;--teal:#FFAD00;--tealbg:#1a2a63}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Helvetica Neue",Helvetica,Arial,sans-serif}
+header{background:#05164D;color:#fff;padding:22px 16px;border-bottom:4px solid #FFAD00}
+header h1{margin:0;font-size:22px;max-width:680px;margin-inline:auto}
+header p{margin:4px auto 0;max-width:680px;opacity:.92;font-size:13px}
+main{max-width:680px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:600;margin:0 0 6px}
+.row{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+@media(max-width:520px){.row{grid-template-columns:1fr}}
+input[type=file],input[type=date],input[type=text]{width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font:inherit}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:11px 14px;font-weight:600}
+.go{width:100%;margin-top:14px;color:#05164D;background:#FFAD00}
+.go:disabled{opacity:.5}
+.ghost{background:var(--tealbg);color:var(--teal)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.bar input{flex:1;min-width:140px}
+.item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px}
+.badge{background:var(--tealbg);color:var(--teal);font-weight:700;font-size:15px;padding:4px 12px;border-radius:99px;white-space:nowrap}
+.msg{color:var(--mute);font-size:13px}.err{color:var(--err)}
+h2{margin:0;font-size:17px}
+#cp,#csv{display:none}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+.chip{background:#0b3d91;color:#fff;padding:6px 12px;font-size:13px;border-radius:99px;font-weight:600}
+.chip.on{background:#D5192B;color:#fff}
+</style>
+</head>
+<body>
+<header><h1>Daily Roster Extractor</h1><p>Upload the monthly PDF, pick a date, get that day's shifts. Runs fully in your browser.</p></header>
+<main>
+<div class="card">
+  <div class="row">
+    <div><label for="f">Roster PDF</label><input id="f" type="file"></div>
+    <div><label for="d">Date</label><input id="d" type="date"></div>
+  </div>
+  <label for="t" style="margin-top:12px">Or type it (e.g. 13. Okt)</label>
+  <input id="t" type="text" placeholder="13. Okt">
+  <button class="go" id="go">Generate roster</button>
+  <p class="msg" id="st"></p>
+</div>
+<div class="card" id="res" hidden>
+  <div style="display:flex;justify-content:space-between;align-items:center"><h2 id="ttl">Assigned shifts</h2><span class="badge" id="cnt"></span></div>
+  <div class="bar"><input id="q" type="text" placeholder="Filter by name or shift"><button class="ghost" id="cp">Copy</button><button class="ghost" id="csv">CSV</button></div>
+  <div class="chips" id="chips"></div>
+  <div id="list"></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const MON=['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+const BELOW=6;
+const IGNORE=new Set(['','none','u','x','vollzeit','minijob','teilzeit','studentische aushilfe','freie schichten','null']);
+const DAYRE=/^(?:[A-Za-zäöü]{2}\.?\s*)?(\d{1,2})\.?(?:\s*[A-Za-zÄäÖöÜü]{3,4}\.?)?$/;
+let data=[],cur='',sel=new Set();
+$('t').value=new Date().getDate()+'. '+MON[new Date().getMonth()];
+try{pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}catch(e){}
+
+$('d').addEventListener('change',e=>{const v=e.target.value;if(v){const[,m,d]=v.split('-');$('t').value=(+d)+'. '+MON[+m-1]}});
+
+function cluster(items,tol){const s=[...items].sort((a,b)=>b.y-a.y),rows=[];
+  for(const it of s){const r=rows[rows.length-1];if(r&&Math.abs(r.y-it.y)<=tol)r.items.push(it);else rows.push({y:it.y,items:[it]})}
+  rows.forEach(r=>r.items.sort((a,b)=>a.x-b.x));return rows}
+
+function parsePage(items,day){
+  // find the date header row: the y-group with the most day-like items
+  const cands=items.filter(i=>DAYRE.test(i.s));
+  const groups=cluster(cands,3).filter(g=>g.items.length>=5);
+  if(!groups.length)return[];
+  const hdr=groups[0], cols=hdr.items.map(i=>({n:+DAYRE.exec(i.s)[1],c:i.x+i.w/2}));
+  const k=cols.findIndex(c=>c.n===day);if(k<0)return[];
+  const left=k>0?(cols[k-1].c+cols[k].c)/2:cols[k].c-(cols[1].c-cols[0].c)/2;
+  const right=k<cols.length-1?(cols[k].c+cols[k+1].c)/2:cols[k].c+(cols[k].c-cols[k-1].c)/2;
+  const nameMax=(cols[0].c-(cols[1].c-cols[0].c)/2);
+  const pitch=(cols[cols.length-1].c-cols[0].c)/(cols.length-1),body=[];
+  for(const i of items){
+    if(i.y>=hdr.y-2||DAYRE.test(i.s)||/^(Mo|Di|Mi|Do|Fr|Sa|So)$/.test(i.s))continue;
+    const tk=i.s.split(/\s+/),n=Math.round(i.w/pitch);
+    if(i.x>nameMax&&i.w>1.5*pitch&&n>1&&tk.length%n===0){const g=tk.length/n,w=i.w/n;for(let j=0;j<n;j++)body.push({s:tk.slice(j*g,(j+1)*g).join(' '),x:i.x+j*w,y:i.y,w})}
+    else body.push(i)}
+  const anchors=cluster(body.filter(i=>i.x+i.w/2<nameMax),4).map(r=>({y:r.y,name:r.items.map(i=>i.s).join(' ').trim(),it:[]}));
+  for(const i of body){const c=i.x+i.w/2;if(c<left||c>=right)continue;
+    let best=null,bd=1e9;
+    anchors.forEach((a,j)=>{const dy=i.y-a.y,up=anchors[j-1],lim=up?up.y-a.y-4:30;
+      if(dy<=lim&&dy>=-BELOW&&Math.abs(dy)<bd){bd=Math.abs(dy);best=a}});
+    if(best)best.it.push(i)}
+  return anchors.filter(a=>!/^(vollzeit|teilzeit|minijob|studentische aushilfe|freie schichten)/i.test(a.name)).map(a=>({name:a.name,shift:cluster(a.it,3).map(r=>r.items.map(i=>i.s).join(' ')).join(' / ')})).filter(e=>e.shift&&!IGNORE.has(e.shift.toLowerCase())&&e.shift!=='*');
+}
+
+async function run(){
+  const file=$('f').files[0],txt=$('t').value.trim(),m=txt.match(/\d{1,2}/);
+  const st=$('st');st.className='msg';
+  if(!file||!m){st.className='msg err';st.textContent='Choose a PDF and a date.';return}
+  if(typeof pdfjsLib==='undefined'){st.className='msg err';st.textContent='PDF reader failed to load. Check your connection and reload.';return}
+  $('go').disabled=true;st.textContent='Reading PDF…';
+  try{
+    const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
+    let all=[];
+    for(let p=1;p<=pdf.numPages;p++){
+      const tc=await(await pdf.getPage(p)).getTextContent();
+      const items=tc.items.filter(i=>i.str.trim()).map(i=>({s:i.str.trim(),x:i.transform[4],y:i.transform[5],w:i.width}));
+      all=all.concat(parsePage(items,+m[0]));
+    }
+    data=all.sort((a,b)=>a.shift.localeCompare(b.shift)||a.name.localeCompare(b.name));
+    cur=txt;sel=new Set();st.textContent=data.length?'':'No shifts found for that date. Check the date and that the PDF has selectable text (not a scan).';
+    $('res').hidden=false;$('ttl').textContent='Shifts · '+txt;render();
+  }catch(e){st.className='msg err';st.textContent='Could not read the PDF: '+e.message}
+  $('go').disabled=false;
+}
+
+function render(){
+  const PIN=['S20','S17','S2','S8L','S20/S17'];const hit=(s,c)=>c==='S20/S17'?(hit(s,'S20')&&hit(s,'S17')):PIN.includes(c)?new RegExp('(^|[^0-9])'+c+'(?![0-9A-Z])').test(s):s===c;const cnt={};data.forEach(r=>{if(!PIN.slice(0,4).some(p=>hit(r.shift,p)))cnt[r.shift]=(cnt[r.shift]||0)+1});
+  sel.forEach(c=>{if(!PIN.includes(c)&&!cnt[c])sel.delete(c)});
+  const C=$('chips');C.textContent='';
+  [['All',data.length],...PIN.map(c=>[c,data.filter(r=>hit(r.shift,c)).length]),...Object.entries(cnt).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))].forEach(([c,n])=>{const b=document.createElement('button');b.className='chip'+((c==='All'?!sel.size:sel.has(c))?' on':'');b.textContent=c+' ('+n+')';b.onclick=()=>{if(c==='All')sel.clear();else if(sel.has(c))sel.delete(c);else sel.add(c);render()};C.append(b)});
+  const q=$('q').value.toLowerCase(),rows=data.filter(r=>(!sel.size||[...sel].some(c=>hit(r.shift,c)))&&(r.name+' '+r.shift).toLowerCase().includes(q));
+  $('cnt').textContent=rows.length+' people';
+  const L=$('list');L.textContent='';
+  rows.forEach(r=>{const d=document.createElement('div');d.className='item';
+    const a=document.createElement('span');a.textContent=r.name;const b=document.createElement('span');b.className='badge';b.textContent=r.shift;
+    d.append(a,b);L.append(d)});
+}
+$('q').addEventListener('input',render);
+$('go').addEventListener('click',run);
+$('f').addEventListener('change',run);
+$('t').addEventListener('change',()=>{if($('f').files[0])run()});
+$('d').addEventListener('change',()=>{if($('f').files[0])run()});
+$('cp').addEventListener('click',async()=>{const t=data.map(r=>r.name+'\t'+r.shift).join('\n');
+  try{await navigator.clipboard.writeText(t);$('cp').textContent='Copied'}catch(e){$('cp').textContent='Copy failed'}
+  setTimeout(()=>$('cp').textContent='Copy',1500)});
+$('csv').addEventListener('click',()=>{
+  const t='Name,Shift\n'+data.map(r=>'"'+r.name.replace(/"/g,'""')+'","'+r.shift.replace(/"/g,'""')+'"').join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download='roster-'+cur.replace(/\W+/g,'-')+'.csv';a.click()});
+</script>
+</body>
+</html>
